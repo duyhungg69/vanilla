@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Adrian Ulrich <adrian@blinkenlights.ch>
+ * Copyright (C) 2015-2020 Adrian Ulrich <adrian@blinkenlights.ch>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,16 +20,22 @@ package ch.blinkenlights.android.vanilla;
 import ch.blinkenlights.android.medialibrary.MediaLibrary;
 
 import java.io.File;
-import java.io.IOException;
 import java.net.URI;
 import java.net.URLConnection;
 import java.net.URISyntaxException;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.StringTokenizer;
+
+import java.nio.file.Path;
 
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Environment;
+import android.text.TextUtils;
 import android.util.Log;
 
 
@@ -143,12 +149,28 @@ public class FileUtils {
 
 		try {
 			if (!destination.isAbsolute()) {
-				path = new File(base, path).getCanonicalPath();
+				path = new File(base, path).getAbsolutePath();
+				final ArrayList<String> pathComponents = new ArrayList<>();
+				final StringTokenizer pathTokenizer = new StringTokenizer(path, File.separator);
+
+				while (pathTokenizer.hasMoreTokens()) {
+					final String pathComponent = pathTokenizer.nextToken();
+
+					if (NAME_PARENT_FOLDER.equals(pathComponent)) {
+						final int lastComponentPosition = pathComponents.size() - 1;
+
+						if (lastComponentPosition >= 0
+							&& !NAME_PARENT_FOLDER.equals(pathComponents.get(lastComponentPosition))) {
+							pathComponents.remove(lastComponentPosition);
+						}
+					} else {
+						pathComponents.add(pathComponent);
+					}
+				}
+				path = File.separator + TextUtils.join(File.separator, pathComponents);
 			}
 		} catch (SecurityException ex) {
 			// Ignore.
-		}catch (IOException ex){
-			// Ignore
 		}
 		return path;
 	}
@@ -212,7 +234,11 @@ public class FileUtils {
 	public static File getFilesystemBrowseStart(Context context) {
 		SharedPreferences prefs = SharedPrefHelper.getSettings(context);
 		String folder = prefs.getString(PrefKeys.FILESYSTEM_BROWSE_START, PrefDefaults.FILESYSTEM_BROWSE_START);
-		return new File( folder.equals("") ? Environment.getExternalStorageDirectory().getAbsolutePath() : folder );
+
+		if (folder.equals("")) {
+			folder = Environment.getExternalStorageDirectory().getAbsolutePath();
+		}
+		return new File(folder);
 	}
 
 	/**
@@ -222,6 +248,39 @@ public class FileUtils {
 	public static String getFileExtension(String filename) {
 		int index = filename.lastIndexOf('.');
 		return index > 0 ? filename.substring(index) : "";
+	}
+
+	/**
+	 * Returns a list of directores contained in 'dir' which are very likely to exist, based
+	 * on what Android told us about the existence of external media dirs.
+	 * This is required as users otherwise may end up in folders they can not navigate out of.
+	 */
+	public static ArrayList<File> getFallbackDirectories(Context context, File dir) {
+		HashSet<File> result = new HashSet<>();
+
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+			Path prefix = dir.toPath();
+			for (File f : context.getExternalMediaDirs()) {
+				Path p = f.toPath();
+				if (p.getNameCount() <= prefix.getNameCount())
+					continue;
+				if (!p.startsWith(prefix))
+					continue;
+				Path sp = p.subpath(prefix.getNameCount(), prefix.getNameCount()+1);
+				result.add(new File(dir, sp.toString()));
+			}
+		} else {
+			// java.nio.Paths was only added in API 26 *sigh*.
+			switch (dir.toString()) {
+			case "/":
+				result.add(new File("/storage"));
+				break;
+			case "/storage/emulated":
+				result.add(new File("/storage/emulated/0"));
+				break;
+			}
+		}
+		return new ArrayList<File>(result);
 	}
 
 	/**
